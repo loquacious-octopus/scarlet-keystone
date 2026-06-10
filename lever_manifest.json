@@ -1,0 +1,45 @@
+{
+  "slug": "harbor-wright",
+  "title": "Harbor Wright",
+  "hypothesis": "Combine Misty Harbor's tuned playbook prompt language with Wertox-style high-diversity candidate generation, bracket selection, and stronger preserve-list repair continuity.",
+  "changed_files": [
+    "configuration.yaml",
+    "pipeline_service/config/settings.py",
+    "pipeline_service/llm/session.py",
+    "pipeline_service/llm/session_store.py",
+    "pipeline_service/modules/scene_coder/agent.py",
+    "pipeline_service/modules/critic/agent.py",
+    "pipeline_service/modules/js_checker/validator/index.js",
+    "pipeline_service/modules/js_checker/validator/safeThree.js",
+    "pipeline_service/modules/js_checker/validator/worker-runner.mjs",
+    "pipeline_service/pipeline/pipeline_factory.py",
+    "lever_manifest.json",
+    "portfolio_strategy.json",
+    "setup.sh"
+  ],
+  "strategy_flags": {
+    "misty_harbor_playbooks": true,
+    "wertox_style_aggressive_search": true,
+    "candidate_bracket_judge": true,
+    "winner_session_promotion": true,
+    "preserve_list_repair": true,
+    "safe_three_server_validation": true,
+    "coder_ensemble_size": 10,
+    "coder_ensemble_temperature": 0.6,
+    "vllm_max_num_seqs": 128,
+    "critic_temperature": 0.6
+  },
+  "harness_flags": {
+    "requires_expensive_generation": true,
+    "adds_llm_calls": true,
+    "candidate_mode": "fresh-bracket-critic-repair",
+    "candidate_count": 10,
+    "candidate_temperature": 0.6
+  },
+  "risk_notes": [
+    "This is an intentionally higher-variance runtime profile than Misty Harbor or Cinder Vector.",
+    "The code keeps Misty Harbor's prompt/playbook language intact and changes only config plumbing plus session continuity.",
+    "The aggressive top_p/top_k/min_p/repetition knobs are now wired through to coder sessions and critic calls.",
+    "The Docker structure is intentionally unchanged so this can be packaged as a small delta layer from Misty Harbor."
+  ]
+}
