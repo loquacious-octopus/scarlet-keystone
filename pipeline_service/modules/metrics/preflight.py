@@ -56,7 +56,7 @@ def check_gpu() -> bool:
             print(
                 f"[preflight] GPU {r.gpu_id} ({r.gpu_name}) degraded: "
                 f"tflops={r.tflops} (min={gpu_bench.MIN_TFLOPS}), "
-                f"vram={r.vram_gb} GB (min={gpu_bench.MIN_VRAM_GB})",
+                f"vram={r.vram_gb} GB",
                 file=sys.stderr,
             )
         return False

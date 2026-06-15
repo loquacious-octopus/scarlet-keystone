@@ -1,31 +1,6 @@
 {
-  "name": "harbor-wright",
-  "purpose": "Misty Harbor plus Wertox-inspired aggressive candidate search and repaired-session continuity.",
-  "source_base": {
-    "repo": "btlabs-ai/btlabs-404-gen",
-    "local_path": "/home/mbode/projects/btlabs-404-gen/misty-harbor"
-  },
-  "optimization_source": {
-    "local_path": "/home/mbode/projects/404-gen-subnet/experiments/playbook_optimization/cinder_vector_open_ended_20260528",
-    "notes": "Keeps the Misty Harbor playbook package and layers in a more aggressive candidate/critic profile."
-  },
-  "adopted_patterns": [
-    "Misty Harbor tuned playbooks",
-    "10 candidate multimodal generation at temperature 0.6",
-    "single-elimination visual bracket selection",
-    "critic preserve-list repair against the selected winner",
-    "canonical session promotion for the winning candidate before repair",
-    "server-side SafeThree validator parity before artifact acceptance"
-  ],
-  "default_mode": {
-    "candidate_count": 10,
-    "candidate_temperature": 0.6,
-    "repair_passes": 2,
-    "notes": "Higher-variance exploratory profile modeled after Wertox while preserving Misty Harbor prompts; server validation now mirrors the stricter local SafeThree validator path."
-  },
-  "rejected_patterns": [
-    "planner re-enable",
-    "wholesale prompt rewrite",
-    "Docker base-layer rebuild"
-  ]
+  "label": "Bright Cedar",
+  "risk_posture": "conservative",
+  "slug": "bright-cedar",
+  "submission_api": "standard"
 }

@@ -34,10 +34,11 @@ export async function ensureBrowser() {
   if (browser) {
     try { await browser.close(); } catch {}
   }
+  const protocolTimeout = parseInt(process.env.PROTOCOL_TIMEOUT_MS || '60000', 10);
   browser = await puppeteer.launch({
     headless: 'new',
     args: [...BASE_ARGS, ...GPU_ARGS],
-    protocolTimeout: 30_000,
+    protocolTimeout,
   });
   return browser;
 }

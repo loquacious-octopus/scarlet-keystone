@@ -6,6 +6,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from config.settings import ProviderRoutingConfig
 from llm.tools import Tool, ToolError, ToolResult
 from logger_config import logger
 from utils.retry import async_retry
@@ -66,6 +67,7 @@ class SessionAgent(Generic[T]):
         max_validation_retries: int = 3,
         reasoning_effort: str | None = None,
         backend: str = "openrouter",
+        providers: ProviderRoutingConfig | None = None,
     ) -> None:
         self.task_id = task_id
         self.actor = actor
@@ -84,6 +86,7 @@ class SessionAgent(Generic[T]):
         self.max_validation_retries = max_validation_retries
         self.reasoning_effort = reasoning_effort
         self.backend = backend
+        self.providers = providers
 
         self._tools: dict[str, Tool] = {t.name: t for t in (tools or [])}
         self.messages: list[dict[str, Any]] = [
@@ -171,6 +174,11 @@ class SessionAgent(Generic[T]):
                     kwargs["extra_body"] = {
                         "reasoning": {"effort": self.reasoning_effort},
                     }
+            if self.providers is not None and self.backend != "vllm":
+                kwargs.setdefault("extra_body", {})["provider"] = (
+                    self.providers.model_dump(exclude_none=True)
+                )
+
             for _k, _v in (
                 ("top_k", self.top_k),
                 ("min_p", self.min_p),
@@ -178,7 +186,7 @@ class SessionAgent(Generic[T]):
             ):
                 if _v is not None:
                     kwargs.setdefault("extra_body", {})[_k] = _v
-
+                    
             async def _make_call(_attempt: int, _last_err: str | None):
                 try:
                     return await self.client.chat.completions.create(**kwargs)
@@ -203,6 +211,15 @@ class SessionAgent(Generic[T]):
             response = await async_retry(_make_call, max_retries=2)
             choice = response.choices[0]
             msg = choice.message
+
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                logger.info(
+                    f"[TOKENS Actor: {self.actor} Task:{self.task_id} Iteration:{it}] | "
+                    f"Prompt: {usage.prompt_tokens} | Completion: {usage.completion_tokens} | "
+                    f"Total: {usage.total_tokens} | Finish Reason: {choice.finish_reason} | "
+                    f"Max Tokens Cap: {kwargs.get('max_tokens')}"
+                )
 
             tool_calls = getattr(msg, "tool_calls", None) or []
             raw_content = msg.content or ""

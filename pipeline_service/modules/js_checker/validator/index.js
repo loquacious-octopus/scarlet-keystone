@@ -46,8 +46,17 @@ export async function validate(source) {
     };
   }
 
+  // Transform: `export default <decl>` → `return <decl>` using exact AST
+  // byte offsets. The worker compiles this with `new Function(body)` so no
+  // ESM loader involvement — avoids module cache leaks and two-phase trap
+  // installation.
+  const exportDecl = ast.program.body.find(s => s.type === 'ExportDefaultDeclaration');
+  const transformed = source.slice(0, exportDecl.start)
+    + 'return '
+    + source.slice(exportDecl.declaration.start);
+
   // Stage 3: worker — module load + execution + post-validation
-  const workerResult = await execute(source);
+  const workerResult = await execute(transformed);
   const passed = workerResult.failures.length === 0;
 
   // stagesRun reflects the furthest stage reached, determined from the worker

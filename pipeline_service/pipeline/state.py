@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from pipeline.task import PipelineTask
-
-if TYPE_CHECKING:
-    from pipeline.task import PipelineTask
+from pipeline.task import PipelineTask
 
 
 class ServiceState(Enum):
@@ -52,24 +48,6 @@ class MinerState:
     @property
     def progress(self) -> int:
         return len(self.tasks)
-
-    @property
-    def results(self) -> dict[str, str]:
-        """Successful tasks keyed by stem, value = js_code."""
-        return {
-            stem: t.js_code
-            for stem, t in self.tasks.items()
-            if not t.failed and t.js_code
-        }
-
-    @property
-    def failed(self) -> dict[str, str]:
-        """Failed tasks keyed by stem, value = failure reason."""
-        out: dict[str, str] = {}
-        for stem, t in self.tasks.items():
-            if t.failed or not t.js_code:
-                out[stem] = t.failure_reason or "no code generated"
-        return out
 
     @property
     def results(self) -> dict[str, str]:

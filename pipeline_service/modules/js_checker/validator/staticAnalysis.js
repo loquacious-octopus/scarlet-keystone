@@ -12,6 +12,7 @@
  *   THREE_AT_TOP_LEVEL         → § Function Signature
  *   THREE_ALIAS_FORBIDDEN      → § Prohibited Three.js APIs (aliasing / spreading / rest / array destructure of THREE)
  *   COMPUTED_PROPERTY_ACCESS   → § Code Constraints
+ *   FORBIDDEN_PROPERTY_ACCESS  → § Code Constraints (.constructor, __proto__, etc.)
  *   LITERAL_BUDGET_EXCEEDED    → § Code Constraints
  */
 
@@ -20,6 +21,7 @@ import {
   ALLOWED_ROOT_IDENTIFIERS,
   FORBIDDEN_IDENTIFIERS,
   COMPUTED_ACCESS_GATED,
+  FORBIDDEN_PROPERTY_NAMES,
 } from './identifiers.js';
 import {
   THREE_ALLOWED,
@@ -264,17 +266,7 @@ export function staticAnalyze(ast) {
     },
 
     // Destructuring / aliasing / spreading THREE — closes bypass paths that
-    // the MemberExpression check misses:
-    //
-    //   const { ShaderMaterial } = THREE;         // extracts a disallowed member
-    //   const { Group: G } = THREE;               // aliased extract (allowlisted, OK)
-    //   const { MathUtils: { seededRandom } } = THREE;  // nested blocked submember
-    //   const { ...rest } = THREE;                // rest grabs everything
-    //   const X = THREE;                          // full alias
-    //   const { X } = someObj; ... X = THREE;     // reassignment alias
-    //   const obj = { ...THREE };                 // object-spread alias
-    //   foo(...THREE);                            // call-spread (nonsense, but reject)
-
+    // the MemberExpression check misses. See helpers below staticAnalyze().
     VariableDeclarator(path) {
       const init = path.node.init;
       if (!init) return;
@@ -297,11 +289,6 @@ export function staticAnalyze(ast) {
       });
     },
 
-    RestElement(path) {
-      // Handled via handleAssignFromThree when inside a pattern whose source
-      // is THREE; nothing to do here in isolation.
-    },
-
     // Cross-function flow: when THREE is passed as an argument, require the
     // receiving parameter to be exactly `Identifier('THREE')`. Otherwise the
     // binding name inside the callee is something like `x` or
@@ -320,6 +307,18 @@ export function staticAnalyze(ast) {
 
     MemberExpression(path) {
       const obj = path.node.object;
+
+      if (
+        !path.node.computed &&
+        path.node.property.type === 'Identifier' &&
+        FORBIDDEN_PROPERTY_NAMES.has(path.node.property.name)
+      ) {
+        failures.push({
+          stage: 'static_analysis',
+          rule: 'FORBIDDEN_PROPERTY_ACCESS',
+          detail: `.${path.node.property.name} at line ${loc(path.node)}`,
+        });
+      }
 
       // Computed access on gated globals
       if (
@@ -421,11 +420,17 @@ export function staticAnalyze(ast) {
   return failures;
 
   // ── Destructure / alias helpers ────────────────────────────────────────────
+  //
+  //   const { ShaderMaterial } = THREE;         // extracts a disallowed member
+  //   const { Group: G } = THREE;               // aliased extract (allowlisted, OK)
+  //   const { MathUtils: { seededRandom } } = THREE;  // nested blocked submember
+  //   const { ...rest } = THREE;                // rest grabs everything
+  //   const X = THREE;                          // full alias
+  //   X = THREE;                                // reassignment alias
+  //   const obj = { ...THREE };                 // object-spread alias
+  //   foo(...THREE);                            // call-spread
+  //   const [a] = THREE;                        // array-destructure
 
-  // Returns true iff `node` resolves to the `THREE` parameter identifier in
-  // a scope where THREE is actually bound. This prevents triggering on
-  // `const THREE = {};` at top level (caught elsewhere) and lets us scope
-  // the extra checks to inside the generate function.
   function isThreeReference(node, path) {
     return (
       node &&
@@ -435,14 +440,10 @@ export function staticAnalyze(ast) {
     );
   }
 
-  // Dispatches on the LHS shape of an assignment/declarator whose RHS is THREE.
-  // Every reachable shape must be explicitly handled — unhandled shapes would
-  // leak THREE into a binding we can't track (e.g. `this.t = THREE`).
   function handleAssignFromThree(lhs, path, line) {
     if (!lhs) return;
 
     if (lhs.type === 'Identifier') {
-      // const X = THREE;  or  X = THREE;
       failures.push({
         stage: 'static_analysis',
         rule: 'THREE_ALIAS_FORBIDDEN',
@@ -457,8 +458,6 @@ export function staticAnalyze(ast) {
     }
 
     if (lhs.type === 'ArrayPattern') {
-      // `const [a] = THREE;` — nonsense (THREE isn't iterable) but reject
-      // to remove an ambiguous escape hatch.
       failures.push({
         stage: 'static_analysis',
         rule: 'THREE_ALIAS_FORBIDDEN',
@@ -468,8 +467,6 @@ export function staticAnalyze(ast) {
     }
 
     if (lhs.type === 'AssignmentPattern') {
-      // `const X = THREE` but inside a default — just recurse on the bound
-      // name; the default value side is evaluated independently.
       handleAssignFromThree(lhs.left, path, line);
       return;
     }
@@ -497,17 +494,15 @@ export function staticAnalyze(ast) {
     });
   }
 
-  // Walks an ObjectPattern whose source is THREE and applies allowlist /
-  // known-forbidden / unknown / submember-block logic to each extracted key.
   function walkObjectPatternFromThree(pattern, line) {
     for (const prop of pattern.properties) {
       if (prop.type === 'RestElement') {
-        // `const { ...rest } = THREE` — rest picks up *every* member including
-        // every disallowed one. Reject unconditionally.
         failures.push({
           stage: 'static_analysis',
           rule: 'THREE_ALIAS_FORBIDDEN',
-          detail: `rest-destructure of THREE (...${extractRestName(prop)}) at line ${line}`,
+          detail: `rest-destructure of THREE (...${
+            prop.argument?.type === 'Identifier' ? prop.argument.name : '?'
+          }) at line ${line}`,
         });
         continue;
       }
@@ -543,8 +538,6 @@ export function staticAnalyze(ast) {
         continue;
       }
 
-      // Key is allowlisted. If the value side is itself a nested pattern and
-      // this key has blocked submembers (e.g. MathUtils.seededRandom), walk it.
       let inner = prop.value;
       if (inner && inner.type === 'AssignmentPattern') inner = inner.left;
       if (
@@ -580,17 +573,10 @@ export function staticAnalyze(ast) {
     }
   }
 
-  function extractRestName(rest) {
-    return rest.argument?.type === 'Identifier' ? rest.argument.name : '?';
-  }
-
   // Inspects a CallExpression or NewExpression and, for each `THREE` argument,
   // enforces the parameter-shape rule on the resolved callee.
   function checkCallWithThreeArg(path) {
     const node = path.node;
-    // Fast-path: only act if an argument is literally `THREE` and THREE is
-    // bound in the current scope (i.e. we're inside generate or a helper
-    // that already received THREE).
     if (!path.scope.hasBinding('THREE')) return;
     if (!Array.isArray(node.arguments)) return;
     let hasThreeArg = false;
@@ -604,11 +590,9 @@ export function staticAnalyze(ast) {
 
     const line = loc(node);
 
-    // Special-case: `new THREE.X(...)` — callee is `THREE.Ctor`. Member
-    // access is validated by the MemberExpression visitor; we still need to
-    // check each THREE argument the same way, but there's no "receiving
-    // function" with inspectable params (it's a Three.js class constructor).
-    // Treat THREE arguments to THREE-constructors as escape paths: reject.
+    // `new THREE.X(THREE)` — callee is a Three.js constructor; the member
+    // access is validated by MemberExpression. THREE arguments here still
+    // escape into the constructor, so reject.
     if (
       node.type === 'NewExpression' &&
       node.callee.type === 'MemberExpression' &&
@@ -643,8 +627,6 @@ export function staticAnalyze(ast) {
       const arg = node.arguments[i];
       if (!arg || arg.type !== 'Identifier' || arg.name !== 'THREE') continue;
 
-      // Locate the matching formal parameter, or determine THREE falls into
-      // a rest parameter / beyond the parameter list.
       let param = null;
       let rejectedHere = false;
       for (let p = 0; p < params.length; p++) {
@@ -674,7 +656,6 @@ export function staticAnalyze(ast) {
         continue;
       }
 
-      // Unwrap `= default` wrapping — the binding shape is what matters.
       let shape = param;
       if (shape.type === 'AssignmentPattern') shape = shape.left;
 
@@ -686,15 +667,10 @@ export function staticAnalyze(ast) {
             detail: `passing THREE to parameter \`${shape.name}\` of ${calleeLabel} (must be named \`THREE\`) at line ${line}`,
           });
         }
-        // else: parameter named THREE → inside the helper, THREE is bound
-        // and every existing rule applies as usual.
         continue;
       }
 
       if (shape.type === 'ObjectPattern') {
-        // `const use = ({ ShaderMaterial, Mesh }) => ...; use(THREE)` —
-        // run the same extract-member checks that apply to direct
-        // `const { ... } = THREE`.
         walkObjectPatternFromThree(shape, line);
         continue;
       }

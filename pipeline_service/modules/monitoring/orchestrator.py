@@ -81,7 +81,9 @@ async def _watch_models(state: MinerState, app: FastAPI, pipeline: GenerationPip
                     image_url=warmup_data_url,
                     seed=42
                 )
-                await pipeline.run_warmup(warmup_task)
+                if pipeline.settings.warmup:
+                    await pipeline.run_warmup(warmup_task)
+                    
                 logger.success("[Warmup] completed successfully")
                 state.status = MinerStatus.READY
                 logger.info(f"models up — ready ({len(checkers)} probed)")

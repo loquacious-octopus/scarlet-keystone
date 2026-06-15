@@ -149,6 +149,10 @@ def save_results(client: httpx.Client, results_dir: Path, stems: list[str]) -> l
             png_bytes = base64.b64decode(data["rendered_png_b64"])
             (results_dir / f"{stem}.png").write_bytes(png_bytes)
 
+        if data.get("refinement_rendered_pngs_b64"):
+            for i, png_b64 in enumerate(data["refinement_rendered_pngs_b64"]):
+                png_bytes = base64.b64decode(png_b64)
+                (results_dir / f"{stem}_refinement_{i+1}.png").write_bytes(png_bytes)
         if data.get("osd"):
             (results_dir / f"{stem}_osd.json").write_text(data["osd"], encoding="utf-8")
 

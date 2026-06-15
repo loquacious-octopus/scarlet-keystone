@@ -10,3 +10,8 @@ class RendererConfig(BaseModel):
     img_size: int = 518
     grid_gap: int = 5
     bg_color: str | None = None
+    sidecar_count: int = 4
+    pool_size: int = 2
+    render_timeout_ms: int = 60000
+    protocol_timeout_ms: int = 60000
+    static_port_base: int = 3000

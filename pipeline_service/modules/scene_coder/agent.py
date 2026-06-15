@@ -8,6 +8,7 @@ from typing import Any
 from llm.session import SessionAgent
 from llm.session_store import SessionStore
 from logger_config import logger
+from modules.base_agent import BaseAgent
 from modules.critic.schema import Issue
 from modules.scene_coder.prompts import (
     CODER_SYSTEM_PROMPT,
@@ -15,63 +16,38 @@ from modules.scene_coder.prompts import (
     CODER_USER_TEMPLATE_CHECKER_REPAIR_IMAGE,
     CODER_USER_TEMPLATE_CRITIC_REPAIR,
     CODER_USER_TEMPLATE_CRITIC_REPAIR_IMAGE,
-    CODER_USER_TEMPLATE_FRESH,
+    CODER_USER_TEMPLATE_IMAGE_ONLY,
     CODER_USER_TEMPLATE_OSD,
 )
 from modules.scene_planner.schema import OSD
+from config.settings import ActorConfig
 
-_ACTOR = "coder"
 
-
-class SceneCoderAgent:
+class SceneCoderAgent(BaseAgent):
     """Per-pipeline JS code generator."""
-
-    actor = _ACTOR
+    actor = "coder"
 
     def __init__(
         self,
+        client: AsyncOpenAI,
+        settings: ActorConfig,
         *,
-        client: Any,
-        model: str,
         session_store: SessionStore,
-        temperature: float = 0.0,
-        top_p: float | None = None,
-        top_k: int | None = None,
-        min_p: float | None = None,
-        presence_penalty: float | None = None,
-        repetition_penalty: float | None = None,
-        seed: int | None = 42,
-        max_tokens: int = 8192,
         max_tool_iters: int = 4,
         max_output_retries: int = 2,
-        backend: str = "openrouter",
-        total_stages: int = 7,
     ) -> None:
-        self.client = client
-        self.model = model
+        super().__init__(client, settings)
         self.session_store = session_store
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.min_p = min_p
-        self.presence_penalty = presence_penalty
-        self.repetition_penalty = repetition_penalty
-        self.seed = seed
-        self.max_tokens = max_tokens
         self.max_tool_iters = max_tool_iters
         self.max_output_retries = max_output_retries
-        self.backend = backend
-        self.total_stages = total_stages
-        self._coder_stage = 2 if total_stages == 7 else 1
-        self._patcher_stage = 6 if total_stages == 7 else 5
 
-    def _build_session(self, task_id: str, actor: str) -> SessionAgent:
-        return self._build_session_with(
-            task_id, actor, seed=self.seed, temperature=self.temperature,
-        )
-
-    def _build_session_with(
-        self, task_id: str, actor: str, *, seed: int | None, temperature: float,
+    def _build_session(
+        self,
+        task_id: str,
+        actor: str,
+        *,
+        seed_override: int | None = None,
+        temperature_override: float | None = None,
     ) -> SessionAgent:
         return SessionAgent(
             task_id=task_id,
@@ -81,81 +57,67 @@ class SceneCoderAgent:
             tools=None,
             response_model=None,
             client=self.client,
-            temperature=temperature,
+            temperature=self.temperature if temperature_override is None else temperature_override,
             top_p=self.top_p,
             top_k=self.top_k,
             min_p=self.min_p,
             presence_penalty=self.presence_penalty,
             repetition_penalty=self.repetition_penalty,
-            seed=seed,
+            seed=self.seed if seed_override is None else seed_override,
             max_tokens=self.max_tokens,
             max_tool_iters=self.max_tool_iters,
             backend=self.backend,
+            providers=self.providers,
         )
 
     async def code(
         self,
         task_id: str,
-        *,
-        osd: OSD | None = None,
+        osd: OSD | None,
         image_bytes: bytes | None = None,
-        image_url: str | None = None,
         image_mime: str = "image/jpeg",
-        candidate_id: int = 0,
+        *,
+        actor_override: str | None = None,
         seed_override: int | None = None,
         temperature_override: float | None = None,
     ) -> str:
-        if osd is None and image_bytes is None and image_url is None:
-            raise ValueError(
-                "code() requires osd OR image_bytes/image_url "
-                "(image-direct mode is used when planner is disabled)."
-            )
-        actor = f"{self.actor}#k{candidate_id}" if candidate_id > 0 else self.actor
-        seed = seed_override if seed_override is not None else self.seed
-        temperature = (
-            temperature_override if temperature_override is not None
-            else self.temperature
+        actor = actor_override or self.actor
+        session = self.session_store.get_or_create(
+            task_id, actor,
+            lambda tid, act: self._build_session(
+                tid, act,
+                seed_override=seed_override,
+                temperature_override=temperature_override,
+            ),
         )
-        factory = (
-            self._build_session
-            if (seed_override is None and temperature_override is None)
-            else (lambda tid, a: self._build_session_with(
-                tid, a, seed=seed, temperature=temperature,
-            ))
-        )
-        session = self.session_store.get_or_create(task_id, actor, factory)
         if osd is not None:
-            text = CODER_USER_TEMPLATE_OSD.format(
-                osd_json=osd.model_dump_json(indent=2)
-            )
+            text = CODER_USER_TEMPLATE_OSD.format(osd_json=osd.model_dump_json(indent=2))
         else:
-            text = CODER_USER_TEMPLATE_FRESH
-
+            if not image_bytes:
+                raise RuntimeError(
+                    f"Coder.code called for Task ID: {task_id} without OSD and without image — "
+                    "use_planner=false requires multimodal coder input."
+                )
+            text = CODER_USER_TEMPLATE_IMAGE_ONLY
         if image_bytes:
             ref_b64 = base64.b64encode(image_bytes).decode()
-            url_str = f"data:{image_mime};base64,{ref_b64}"
             user_msg: str | list[dict[str, Any]] = [
-                {"type": "image_url", "image_url": {"url": url_str}},
                 {"type": "text", "text": text},
-            ]
-        elif image_url:
-            user_msg = [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": text},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{image_mime};base64,{ref_b64}"}},
             ]
         else:
             user_msg = text
-        prefix = f"[{self._coder_stage}/{self.total_stages} Coder]"
-        parts_n = len(osd.parts) if osd is not None else 0
-        cand_tag = f" | k{candidate_id} (seed={seed}, T={temperature})" if candidate_id > 0 else ""
         logger.info(
-            f"{prefix} Started Task {task_id} | Model: {self.model} | OSD Parts: {parts_n} | Multimodal: {bool(image_bytes or image_url)}{cand_tag}"
+            f"[2/7 Coder] Started Task {task_id} | Actor: {actor} | Model: {self.model} | "
+            f"OSD Parts: {len(osd.parts) if osd else 'none'} | Multimodal: {bool(image_bytes)}"
         )
         t0 = time.time()
         js_code = await self._run_until_valid_js(session, user_msg)
         dt = time.time() - t0
         logger.info(
-            f"{prefix} Finished Task {task_id} | Elapsed: {dt:.1f}s | Bytes: {len(js_code.encode('utf-8'))} | Lines: {len(js_code.splitlines())}{cand_tag}"
+            f"[2/7 Coder] Finished Task {task_id} | Actor: {actor} | Elapsed: {dt:.1f}s | "
+            f"Bytes: {len(js_code.encode('utf-8'))} | Lines: {len(js_code.splitlines())}"
         )
         return js_code
 
@@ -163,7 +125,7 @@ class SceneCoderAgent:
         self,
         task_id: str,
         *,
-        osd: OSD | None = None,
+        osd: OSD | None,
         js_errors: list[str],
     ) -> str:
         session = self.session_store.get(task_id, self.actor)
@@ -197,7 +159,7 @@ class SceneCoderAgent:
         self,
         task_id: str,
         *,
-        osd: OSD | None = None,
+        osd: OSD | None,
         issues: list[Issue] | list[dict[str, Any]],
         overall_score: float,
         matching_aspects: list[str] | None = None,
@@ -222,18 +184,17 @@ class SceneCoderAgent:
             "\n".join(f"- {m}" for m in matching_aspects)
             if matching_aspects else "- (none flagged by critic — proceed carefully)"
         )
-        issues_json = json.dumps(normalized_issues, indent=2, ensure_ascii=False)
         if osd is not None:
             user_text = CODER_USER_TEMPLATE_CRITIC_REPAIR.format(
                 osd_json=osd.model_dump_json(indent=2),
                 overall_score=f"{overall_score:.2f}",
-                issues_json=issues_json,
+                issues_json=json.dumps(normalized_issues, indent=2, ensure_ascii=False),
                 matching_block=matching_block,
             )
         else:
             user_text = CODER_USER_TEMPLATE_CRITIC_REPAIR_IMAGE.format(
                 overall_score=f"{overall_score:.2f}",
-                issues_json=issues_json,
+                issues_json=json.dumps(normalized_issues, indent=2, ensure_ascii=False),
                 matching_block=matching_block,
             )
         multimodal = image_bytes is not None and render_png is not None
@@ -248,24 +209,23 @@ class SceneCoderAgent:
                          "Compare them yourself and decide what to fix. "
                          "Critic feedback follows but you should rely on the "
                          "visual comparison primarily.\n"},
+                {"type": "text", "text": user_text},
                 {"type": "image_url",
                  "image_url": {"url": f"data:{image_mime};base64,{ref_b64}"}},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/png;base64,{render_b64}"}},
-                {"type": "text", "text": user_text},
             ]
         else:
             user_content = user_text
 
-        patch_prefix = f"[{self._patcher_stage}/{self.total_stages} Patcher]"
         logger.info(
-            f"{patch_prefix} Started Task {task_id} | Repair: critic | Issues: {len(normalized_issues)} | Score: {overall_score:.2f} | Multimodal: {multimodal}"
+            f"[6/7 Patcher] Started Task {task_id} | Repair: critic | Issues: {len(normalized_issues)} | Score: {overall_score:.2f} | Multimodal: {multimodal}"
         )
         t0 = time.time()
         js_code = await self._run_until_valid_js(session, user_content)
         dt = time.time() - t0
         logger.info(
-            f"{patch_prefix} Finished Task {task_id} | Elapsed: {dt:.1f}s | Bytes: {len(js_code.encode('utf-8'))}"
+            f"[6/7 Patcher] Finished Task {task_id} | Elapsed: {dt:.1f}s | Bytes: {len(js_code.encode('utf-8'))}"
         )
         return js_code
 

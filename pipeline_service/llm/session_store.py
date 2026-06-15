@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Callable
@@ -38,13 +37,22 @@ class SessionStore:
         return len(keys)
 
     def evict_actor(self, task_id: str, actor: str) -> bool:
-        """Drop a single (task, actor) session. Returns True if found."""
+        """Drop a single session by (task_id, actor). Returns True if removed."""
         return self._sessions.pop((task_id, actor), None) is not None
 
-    def rename_actor(
-        self, task_id: str, from_actor: str, to_actor: str,
-    ) -> bool:
-        """Move a session from one actor key to another (same task).
+    def clear(self) -> int:
+        """Drop every session. Returns count cleared."""
+        n = len(self._sessions)
+        self._sessions.clear()
+        return n
+
+    def rename_actor(self, task_id: str, from_actor: str, to_actor: str) -> bool:
+        """Promote a per-candidate session to the canonical actor name.
+
+        Used by multigen: after the judge picks a winner among `coder#k0`,
+        `coder#k1`, ... we rename the winner's session to plain `coder` so
+        refinement can call `session_store.get(task_id, "coder")`. If a
+        previous session occupies the target slot, it is overwritten.
         """
         sess = self._sessions.pop((task_id, from_actor), None)
         if sess is None:

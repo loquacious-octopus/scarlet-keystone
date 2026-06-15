@@ -185,7 +185,152 @@ Key idioms:
 - Rolled arms need top cylinders, side support slabs, and front cap discs.
 - Upholstery, wood, metal, seams, buttons, and legs use separate materials.
 
-### Furniture pattern — Slatted chaise lounge
+### Furniture pattern - tub / barrel accent chair
+
+Reference summary:
+> A single rounded armchair with a continuous curved back wrapping into both
+> arms, dark taupe fabric upholstery, thick loose seat cushion with front
+> apron, raised piping around the top and cushion edges, subtle vertical seams
+> on the inside back, and four tapered splayed wooden legs.
+
+Pattern to reuse:
+
+```javascript
+const chair = new THREE.Group();
+
+const fabricMat = new THREE.MeshStandardMaterial({
+  color: 0x4a4038,
+  metalness: 0.0,
+  roughness: 0.96,
+  side: THREE.DoubleSide,
+});
+const cushionMat = new THREE.MeshStandardMaterial({
+  color: 0x5a5047,
+  metalness: 0.0,
+  roughness: 0.94,
+});
+const seamMat = new THREE.MeshStandardMaterial({
+  color: 0x211d1a,
+  metalness: 0.0,
+  roughness: 0.98,
+});
+const woodMat = new THREE.MeshStandardMaterial({
+  color: 0xb87935,
+  metalness: 0.0,
+  roughness: 0.55,
+});
+
+const shellRx = 0.48;
+const shellRz = 0.38;
+const shellH = 0.48;
+const shellY = 0.10;
+const theta0 = Math.PI * 0.30;
+const theta1 = Math.PI * 1.70;
+
+function arcPoint(theta, y, inset = 0.0) {
+  const rx = shellRx - inset;
+  const rz = shellRz - inset * 0.75;
+  return new THREE.Vector3(Math.sin(theta) * rx, y, Math.cos(theta) * rz - 0.03);
+}
+
+function addArcTube(name, y, r, mat, inset = 0.0, start = theta0, end = theta1) {
+  const pts = [];
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24;
+    pts.push(arcPoint(start + (end - start) * t, y, inset));
+  }
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 32, r, 8, false), mat);
+  chair.add(mesh);
+  return mesh;
+}
+
+function addBox(w, h, d, mat, x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  chair.add(mesh);
+  return mesh;
+}
+
+// U-shaped upholstered shell: partial cylinder open at the front, scaled oval.
+const outerShell = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.0, 1.05, shellH, 48, 1, true, theta0, theta1 - theta0),
+  fabricMat
+);
+outerShell.scale.set(shellRx, 1.0, shellRz);
+outerShell.position.set(0, shellY, -0.03);
+chair.add(outerShell);
+
+// Inner darker surface gives thickness without making a closed bucket.
+const innerShell = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.86, 0.90, shellH * 0.90, 48, 1, true, theta0 + 0.03, theta1 - theta0 - 0.06),
+  cushionMat
+);
+innerShell.scale.set(shellRx, 1.0, shellRz);
+innerShell.position.set(0, shellY + 0.015, -0.03);
+chair.add(innerShell);
+
+// Thick cushion and front apron. Flattened sphere on top softens the box.
+addBox(0.72, 0.105, 0.46, cushionMat, 0, -0.03, 0.06);
+const cushionDome = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 12), cushionMat);
+cushionDome.scale.set(0.72, 0.055, 0.43);
+cushionDome.position.set(0, 0.035, 0.055);
+chair.add(cushionDome);
+addBox(0.74, 0.09, 0.055, fabricMat, 0, -0.115, 0.30);
+
+// Piping: rounded top rail, front arm edges, lower shell seam, cushion seam.
+addArcTube("top_piping", shellY + shellH / 2 + 0.012, 0.018, seamMat);
+addArcTube("lower_piping", shellY - shellH / 2 + 0.018, 0.008, seamMat, 0.02);
+const frontPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, 0.74, 10), seamMat);
+frontPipe.rotation.z = Math.PI / 2;
+frontPipe.position.set(0, 0.038, 0.305);
+chair.add(frontPipe);
+for (const theta of [theta0, theta1]) {
+  const p = arcPoint(theta, shellY, 0.01);
+  const vertical = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, shellH * 0.84, 10), seamMat);
+  vertical.position.set(p.x, shellY, p.z);
+  chair.add(vertical);
+}
+
+// Inner back panel seams and subtle fabric crease lines follow the curve.
+for (const theta of [Math.PI * 0.72, Math.PI, Math.PI * 1.28]) {
+  const p = arcPoint(theta, shellY + 0.03, 0.06);
+  const seam = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, shellH * 0.68, 8), seamMat);
+  seam.position.set(p.x, p.y, p.z);
+  chair.add(seam);
+}
+for (let i = 0; i < 7; i++) {
+  const theta = theta0 + (theta1 - theta0) * ((i + 1) / 8);
+  addArcTube("fabric_crease", shellY + 0.03 + (i % 2) * 0.035, 0.0025, seamMat, 0.075, theta - 0.055, theta + 0.055);
+}
+
+// Four tapered conical wood legs splay outward from below the cushion.
+for (const [x, z, rx, rz] of [
+  [-0.30,  0.24, -0.20,  0.12],
+  [ 0.30,  0.24,  0.20,  0.12],
+  [-0.28, -0.25, -0.16, -0.10],
+  [ 0.28, -0.25,  0.16, -0.10],
+]) {
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.045, 0.34, 12), woodMat);
+  leg.position.set(x, -0.31, z);
+  leg.rotation.z = rx;
+  leg.rotation.x = rz;
+  chair.add(leg);
+}
+```
+
+Key idioms:
+- Use a partial cylinder arc (`thetaStart`, `thetaLength`) for the tub shell;
+  never a full cylinder/bucket, cage railing, or four exposed back posts.
+- The shell wraps from left arm around the back to right arm and stays open
+  at the front. Top piping follows the same arc and sells the rounded lip.
+- Seat cushion is a separate thick padded module inside the shell, with a
+  front apron and seam/piping; it is not just the bottom of the cylinder.
+- Barrel chairs need four wooden legs that lean outward. Straight vertical
+  pegs read cheap and miss the mid-century reference.
+- Fabric/velvet needs high roughness plus seams/creases/piping; plain smooth
+  plastic makes the chair look like a bucket.
+
+### Furniture pattern - Slatted chaise lounge
 
 ```javascript
 const lounge = new THREE.Group();
@@ -224,6 +369,302 @@ Key idioms:
 - Slats are individual planks with gaps, not a single solid ramp.
 - Backrest planks share a recline angle; base planks stay nearly horizontal.
 - Rails and angled legs sit under the planks and remain visually connected.
+
+### Food vessel pattern - open noodle strainer and yogurt cup
+
+Reference summary:
+> An open bamboo noodle strainer or bowl with visible noodles inside, plus a
+> leaning chopstick/handle; or an open yogurt tub with white cream and a spoon.
+
+Pattern to reuse:
+
+```javascript
+const dish = new THREE.Group();
+
+const bambooMat = new THREE.MeshStandardMaterial({ color: 0xd7b57a, metalness: 0.0, roughness: 0.72 });
+const noodleMat = new THREE.MeshStandardMaterial({ color: 0xf2d56b, metalness: 0.0, roughness: 0.82 });
+const creamMat = new THREE.MeshStandardMaterial({ color: 0xf8f7ec, metalness: 0.0, roughness: 0.38 });
+const bluePlasticMat = new THREE.MeshStandardMaterial({ color: 0x0077aa, metalness: 0.0, roughness: 0.36 });
+const metalMat = new THREE.MeshStandardMaterial({ color: 0xc9c9c0, metalness: 0.75, roughness: 0.32 });
+
+function addTube(group, points, r, mat, closed = false, segments = 32) {
+  const curve = new THREE.CatmullRomCurve3(points, closed);
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, segments, r, 8, closed), mat);
+  group.add(mesh);
+  return mesh;
+}
+
+function addRing(group, radius, tube, y, mat) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, tube, 10, 48), mat);
+  ring.rotation.x = Math.PI / 2; // torus lies flat in XZ as a rim/foot
+  ring.position.y = y;
+  group.add(ring);
+  return ring;
+}
+
+function addLathe(profile, mat) {
+  const mesh = new THREE.Mesh(new THREE.LatheGeometry(profile, 56), mat);
+  dish.add(mesh);
+  return mesh;
+}
+
+// Open bamboo strainer: wall profile is shallow and concave, never a closed
+// dark nest. Food sits below rim but above the base.
+const strainer_profile = [
+  new THREE.Vector2(0.12, -0.18),
+  new THREE.Vector2(0.20, -0.14),
+  new THREE.Vector2(0.32, -0.02),
+  new THREE.Vector2(0.39,  0.13),
+  new THREE.Vector2(0.41,  0.18),
+];
+const basket_wall = addLathe(strainer_profile, bambooMat);
+basket_wall.material.side = THREE.DoubleSide;
+const top_rim = addRing(dish, 0.415, 0.025, 0.18, bambooMat);
+const foot_ring = addRing(dish, 0.135, 0.012, -0.18, bambooMat);
+
+// Ordered ribs connect foot to rim. They are not random sticks on the ground.
+for (let i = 0; i < 28; i++) {
+  const a = (i / 28) * Math.PI * 2;
+  const c = Math.cos(a), s = Math.sin(a);
+  addTube(dish, [
+    new THREE.Vector3(c * 0.13, -0.17, s * 0.13),
+    new THREE.Vector3(c * 0.27, -0.06, s * 0.27),
+    new THREE.Vector3(c * 0.39,  0.16, s * 0.39),
+  ], 0.0045, bambooMat, false, 10);
+}
+
+// Noodles: low looping curves in the XZ plane with small height variation.
+// Avoid vertical strands, poles, or tassels rising from the bowl.
+for (let i = 0; i < 18; i++) {
+  const pts = [];
+  const baseR = 0.08 + (i % 6) * 0.024;
+  const y = 0.015 + Math.floor(i / 6) * 0.018;
+  const phase = i * 0.43;
+  for (let j = 0; j < 28; j++) {
+    const t = (j / 27) * Math.PI * 2;
+    const r = baseR + 0.018 * Math.sin(t * 3 + phase);
+    pts.push(new THREE.Vector3(
+      Math.cos(t + phase) * r,
+      y + 0.010 * Math.sin(t * 2 + phase),
+      Math.sin(t + phase) * r * 0.75
+    ));
+  }
+  addTube(dish, pts, 0.009, noodleMat, true, 34);
+}
+
+// A chopstick/handle leans over the rim and enters the food; it is not a
+// vertical central rod and does not pierce through the side wall.
+addTube(dish, [
+  new THREE.Vector3(-0.05, 0.02, 0.02),
+  new THREE.Vector3( 0.10, 0.22, -0.10),
+  new THREE.Vector3( 0.28, 0.40, -0.25),
+], 0.012, bambooMat, false, 12);
+
+// Yogurt cup variant: use the same open-vessel logic but swap material,
+// add cream, a side label, and a spoon partially submerged in the cream.
+const yogurt = new THREE.Group();
+const cupMat = new THREE.MeshStandardMaterial({ color: 0xf4eed2, metalness: 0.0, roughness: 0.42 });
+const labelMat = new THREE.MeshStandardMaterial({ color: 0xe8dfb8, metalness: 0.0, roughness: 0.48 });
+const cup_profile = [
+  new THREE.Vector2(0.22, -0.20),
+  new THREE.Vector2(0.30, -0.15),
+  new THREE.Vector2(0.34,  0.15),
+  new THREE.Vector2(0.36,  0.20),
+];
+const cup = new THREE.Mesh(new THREE.LatheGeometry(cup_profile, 48), cupMat);
+yogurt.add(cup);
+const cup_rim = new THREE.Mesh(new THREE.TorusGeometry(0.365, 0.018, 10, 48), bluePlasticMat);
+cup_rim.rotation.x = Math.PI / 2;
+cup_rim.position.y = 0.205;
+yogurt.add(cup_rim);
+const cream_surface = new THREE.Mesh(new THREE.SphereGeometry(0.5, 48, 14), creamMat);
+cream_surface.scale.set(0.33, 0.045, 0.33);
+cream_surface.position.y = 0.185;
+yogurt.add(cream_surface);
+for (let i = 0; i < 4; i++) {
+  const pts = [];
+  for (let j = 0; j < 30; j++) {
+    const t = (j / 29) * Math.PI * 2;
+    const r = 0.07 + i * 0.045 + 0.006 * Math.sin(t * 2);
+    pts.push(new THREE.Vector3(Math.cos(t) * r, 0.225 + i * 0.004, Math.sin(t) * r));
+  }
+  addTube(yogurt, pts, 0.004, creamMat, true, 28);
+}
+const side_label = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.006), labelMat);
+side_label.position.set(0, -0.02, 0.342);
+yogurt.add(side_label);
+addTube(yogurt, [
+  new THREE.Vector3(0.12, 0.20, 0.02),
+  new THREE.Vector3(0.24, 0.30, -0.04),
+  new THREE.Vector3(0.36, 0.43, -0.12),
+], 0.010, bluePlasticMat, false, 12);
+const spoon_bowl = new THREE.Mesh(new THREE.SphereGeometry(0.035, 20, 10), metalMat);
+spoon_bowl.scale.set(1.0, 0.18, 1.45);
+spoon_bowl.position.set(0.105, 0.197, 0.015);
+yogurt.add(spoon_bowl);
+```
+
+Key idioms:
+- Vessel first, food second, utensil last. The food must be inside the rim.
+- Noodles are horizontal looping tubes with small height offsets, not vertical
+  strands or a central tassel.
+- Bamboo strainers use ordered ribs connected to rim/foot; random exterior
+  sticks read as a nest rather than a basket.
+- Yogurt is an open cream surface with swirl ridges. Labels belong on the cup
+  side, not across the cream.
+- Utensils lean across the rim and make contact with food or vessel.
+
+### Jewelry pattern - gemstone ring with band, setting, and facets
+
+Reference summary:
+> A polished ring with a continuous circular band, an empty finger hole, a
+> raised gemstone setting at the top/front, metal shoulders, bezel/prongs, and
+> either a faceted sapphire-like stone or a milky moonstone cabochon.
+
+Pattern to reuse:
+
+```javascript
+const ring = new THREE.Group();
+
+const blueMetalMat = new THREE.MeshStandardMaterial({
+  color: 0x063fbd,
+  metalness: 0.75,
+  roughness: 0.18,
+});
+const silverMat = new THREE.MeshStandardMaterial({
+  color: 0xd8dde2,
+  metalness: 0.9,
+  roughness: 0.16,
+});
+const darkGrooveMat = new THREE.MeshStandardMaterial({
+  color: 0x020818,
+  metalness: 0.6,
+  roughness: 0.28,
+});
+const sapphireMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0a56ff,
+  metalness: 0.0,
+  roughness: 0.06,
+  transmission: 0.62,
+  ior: 1.76,
+  transparent: true,
+  opacity: 0.82,
+});
+const moonstoneMat = new THREE.MeshPhysicalMaterial({
+  color: 0xdcecf4,
+  metalness: 0.0,
+  roughness: 0.32,
+  transmission: 0.38,
+  ior: 1.48,
+  transparent: true,
+  opacity: 0.78,
+});
+
+function addTube(group, points, r, mat, segments = 20) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, segments, r, 8, false), mat);
+  group.add(mesh);
+  return mesh;
+}
+
+// Main band: front-facing hoop in the XY plane. Keep the center empty.
+const band = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.043, 18, 72), blueMetalMat);
+band.scale.set(0.82, 1.0, 0.42); // oval finger hole and thick glossy depth
+ring.add(band);
+
+// Inner dark edge makes the finger hole readable, especially on dark metal.
+const inner_shadow = new THREE.Mesh(new THREE.TorusGeometry(0.255, 0.008, 8, 72), darkGrooveMat);
+inner_shadow.scale.set(0.82, 1.0, 0.44);
+inner_shadow.position.z = 0.018;
+ring.add(inner_shadow);
+
+// Mirrored shoulders connect the upper band to the gemstone setting.
+for (const side of [-1, 1]) {
+  addTube(ring, [
+    new THREE.Vector3(side * 0.17, 0.22, 0.010),
+    new THREE.Vector3(side * 0.13, 0.30, 0.050),
+    new THREE.Vector3(side * 0.075, 0.355, 0.075),
+  ], 0.026, blueMetalMat, 16);
+}
+
+// Bezel around the gem: a separate raised oval ring in front of the band.
+const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.145, 0.012, 8, 48), blueMetalMat);
+bezel.scale.set(1.10, 0.88, 1.0);
+bezel.position.set(0, 0.355, 0.090);
+ring.add(bezel);
+
+// Faceted sapphire: low radial segments and flattened depth, not a smooth blob.
+const sapphire = new THREE.Mesh(new THREE.CylinderGeometry(0.118, 0.145, 0.060, 12), sapphireMat);
+sapphire.rotation.x = Math.PI / 2; // cylinder axis points toward +Z
+sapphire.scale.set(1.12, 0.88, 1.0);
+sapphire.position.set(0, 0.355, 0.100);
+ring.add(sapphire);
+
+// Bright triangular facet hints on the front face. These are shallow patches.
+const facetMat = new THREE.MeshBasicMaterial({ color: 0x8ed6ff, transparent: true, opacity: 0.45 });
+for (let i = 0; i < 8; i++) {
+  const a = (i / 8) * Math.PI * 2;
+  const facet = new THREE.Mesh(new THREE.CircleGeometry(0.030, 3), facetMat);
+  facet.scale.set(1.6, 0.75, 1.0);
+  facet.rotation.z = a + Math.PI / 6;
+  facet.position.set(Math.cos(a) * 0.060, 0.355 + Math.sin(a) * 0.045, 0.134);
+  ring.add(facet);
+}
+
+// Four small claws/prongs pin the gemstone to the bezel.
+for (const [x, y] of [[0, 0.485], [0, 0.225], [-0.158, 0.355], [0.158, 0.355]]) {
+  addTube(ring, [
+    new THREE.Vector3(x * 0.92, y, 0.064),
+    new THREE.Vector3(x, y, 0.138),
+  ], 0.006, blueMetalMat, 4);
+}
+
+// Moonstone/cabochon variant: smooth milky stone, but still supported by
+// visible silver band, side filigree, bezel, and prongs.
+const moonstone_ring = new THREE.Group();
+const thin_band = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.020, 14, 72), silverMat);
+thin_band.scale.set(1.35, 0.55, 0.30);
+moonstone_ring.add(thin_band);
+const moonstone = new THREE.Mesh(new THREE.SphereGeometry(0.155, 32, 18), moonstoneMat);
+moonstone.scale.set(1.0, 1.0, 0.42);
+moonstone.position.set(0, 0.135, 0.090);
+moonstone_ring.add(moonstone);
+const moon_bezel = new THREE.Mesh(new THREE.TorusGeometry(0.160, 0.008, 8, 48), silverMat);
+moon_bezel.scale.set(1.0, 1.0, 1.0);
+moon_bezel.position.set(0, 0.135, 0.070);
+moonstone_ring.add(moon_bezel);
+for (const side of [-1, 1]) {
+  addTube(moonstone_ring, [
+    new THREE.Vector3(side * 0.16, 0.09, 0.020),
+    new THREE.Vector3(side * 0.25, 0.04, 0.025),
+    new THREE.Vector3(side * 0.33, 0.00, 0.005),
+  ], 0.010, silverMat, 16);
+  addTube(moonstone_ring, [
+    new THREE.Vector3(side * 0.17, 0.17, 0.035),
+    new THREE.Vector3(side * 0.25, 0.20, 0.030),
+    new THREE.Vector3(side * 0.33, 0.14, 0.005),
+  ], 0.006, silverMat, 16);
+}
+const speckMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.34 });
+for (let i = 0; i < 18; i++) {
+  const a = i * 1.618;
+  const r = 0.035 + (i % 5) * 0.018;
+  const speck = new THREE.Mesh(new THREE.SphereGeometry(0.006 + (i % 3) * 0.002, 8, 4), speckMat);
+  speck.position.set(Math.cos(a) * r, 0.135 + Math.sin(a) * r, 0.150);
+  moonstone_ring.add(speck);
+}
+```
+
+Key idioms:
+- A ring is a continuous band plus a setting. The gemstone does not replace
+  the band, and the finger hole must stay visibly empty.
+- Put the band in the XY plane so the hole faces +Z; place the stone and
+  bezel at the upper/front of the band.
+- Shoulders, bezel, prongs, side filigree, and side stones are structural
+  supports, not optional decoration when the reference shows them.
+- Faceted stones need angular geometry and small facet highlights. Cabochons
+  and moonstones are smooth, but need cloudy translucency and a metal setting.
+- Use distinct materials for metal, gemstone, dark grooves, and highlights.
 
 ### Example 2 — Glass bottle (lathe profile, transmission glass)
 
@@ -318,7 +759,7 @@ export default function generate(THREE) {
   const bodyMat   = new THREE.MeshStandardMaterial({ color: 0xC8B896, roughness: 0.6, metalness: 0.1 });
   const blackMat  = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7, metalness: 0.05 });
   const darkMat   = new THREE.MeshStandardMaterial({ color: 0x1A1A1A, roughness: 0.8, metalness: 0.05 });
-  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xC0C0C0, roughness: 0.2, metalness: 0.6 });
+  const chromeMat = new THREE.MeshStandardMaterial({ color: 0xC0C0C0, roughness: 0.1, metalness: 0.9 });
   const glassMat  = new THREE.MeshPhysicalMaterial({
     color: 0x8899AA, roughness: 0.1, metalness: 0.0,
     transmission: 0.5, transparent: true, opacity: 0.6,
@@ -423,13 +864,14 @@ export default function generate(THREE) {
     addBox(0.012, lbH * 0.22, lbL * 0.9, blackMat, fs * (lbW / 2 + 0.005), bodyBot + lbH * 0.11, 0);
   }
 
-  // --- wheels: TorusGeometry (tire) + CylinderGeometry (hub + cap),
-  //     all rotated Math.PI/2 around Z so they face the X-axis. ---
+  // --- wheels: TorusGeometry (tire) + CylinderGeometry (hub + cap).
+  //     Tire torus rotates around Y; hub/cap cylinders rotate around Z.
+  //     All visible faces point outward along the X-axis. ---
   const wFZ =  VL * 0.30, wRZ = -VL * 0.30, wInX = lbW / 2;
   for (const [wx, wz] of [[-wInX, wFZ], [wInX, wFZ], [-wInX, wRZ], [wInX, wRZ]]) {
     const wy = wheelCY;
     const tire = new THREE.Mesh(new THREE.TorusGeometry(torusR, tireThick, 10, 24), tireMat);
-    tire.rotation.z = Math.PI / 2;
+    tire.rotation.y = Math.PI / 2;
     tire.position.set(wx, wy, wz);
     group.add(tire);
 
@@ -460,7 +902,6 @@ export default function generate(THREE) {
   const spareZ = -lbL / 2 - bmpD - spareThick - 0.008;
   const spareY = bodyBot + lbH * 0.5;
   const spareTire = new THREE.Mesh(new THREE.TorusGeometry(spareTorusR, spareThick, 8, 20), tireMat);
-  spareTire.rotation.x = Math.PI / 2;
   spareTire.position.set(0, spareY, spareZ);
   group.add(spareTire);
   const spareHub = new THREE.Mesh(new THREE.CylinderGeometry(wheelR * 0.35, wheelR * 0.35, 0.012, 10), hubMat);
@@ -498,15 +939,174 @@ Key idioms:
   tail/lens) — never one global material for a multi-surface object.
 - `addBox` / `addTube` helpers eliminate repeated `new THREE.Mesh(...)` for
   symmetric parts — extract helpers whenever the same pattern appears 4+ times.
-- Wheels: `TorusGeometry` (tire ring) + `CylinderGeometry` (hub disc),
-  both with `rotation.z = Math.PI/2` so they face the X-axis, not Y-up.
+- Wheels: `TorusGeometry` (tire ring) uses `rotation.y = Math.PI/2`;
+  `CylinderGeometry` hub discs use `rotation.z = Math.PI/2`. Both face the
+  X-axis, not front/back.
 - Roof rack rails and cross-bars use `TubeGeometry` with `LineCurve3` for
   thin structural lines — not BoxGeometry.
 - Symmetric pairs (wheels, windows, fenders, mirrors, steps) use
   `for (const side of [-1, 1])` so count is explicit and easy to verify.
-- Spare tyre on rear door faces forward → `rotation.x = Math.PI/2` (Y-axis
-  wheel), unlike the road wheels which use `rotation.z = Math.PI/2`.
 - `fitToUnitCube` is still mandatory even for large multi-part assemblies.
+- Correction for rear-door spare wheels: the tire torus can keep its default
+  XY plane on a rear door; only the hub disc needs `rotation.x = Math.PI/2`.
+
+### Vehicle pattern - rounded toy microcar / city car
+
+Reference summary:
+> A small bright green toy-like city car with a rounded front hood, black
+> soft roof/canopy, upright black pillars, large windshield/side openings,
+> visible dark seats, circular headlights, grille, mirrors, and four small
+> black wheels tucked under rounded fenders.
+
+Pattern to reuse:
+
+```javascript
+const car = new THREE.Group();
+
+const greenMat = new THREE.MeshStandardMaterial({ color: 0x16d92b, metalness: 0.0, roughness: 0.32 });
+const blackMat = new THREE.MeshStandardMaterial({ color: 0x050608, metalness: 0.0, roughness: 0.55 });
+const rubberMat = new THREE.MeshStandardMaterial({ color: 0x101010, metalness: 0.0, roughness: 0.85 });
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0x8ec7d9,
+  metalness: 0.0,
+  roughness: 0.08,
+  transmission: 0.45,
+  transparent: true,
+  opacity: 0.55,
+});
+const lightMat = new THREE.MeshStandardMaterial({
+  color: 0xf8f5df,
+  metalness: 0.0,
+  roughness: 0.22,
+  emissive: 0xf8f5df,
+  emissiveIntensity: 0.12,
+});
+const tailMat = new THREE.MeshStandardMaterial({
+  color: 0xff5a22,
+  metalness: 0.0,
+  roughness: 0.35,
+  emissive: 0xff2a10,
+  emissiveIntensity: 0.10,
+});
+
+function addBox(w, h, d, mat, x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  car.add(mesh);
+  return mesh;
+}
+
+function addRoundedCap(w, h, d, mat, x, y, z) {
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 12), mat);
+  cap.scale.set(w, h, d);
+  cap.position.set(x, y, z);
+  car.add(cap);
+  return cap;
+}
+
+function addTube(p1, p2, r, mat) {
+  const tube = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.LineCurve3(p1, p2), 1, r, 8, false),
+    mat
+  );
+  car.add(tube);
+  return tube;
+}
+
+// Shared dimensions: short length, tall cabin, low wheels.
+const width = 0.55;
+const length = 0.82;
+const bodyY = -0.06;
+const bodyH = 0.20;
+const wheelR = 0.072;
+const wheelY = -0.18;
+const frontZ = 0.31;
+const rearZ = -0.28;
+
+// Bright rounded lower shell: one block for mass plus ellipsoid caps.
+addBox(width * 0.78, bodyH, length * 0.62, greenMat, 0, bodyY, 0.00);
+addRoundedCap(width * 0.38, bodyH * 0.52, 0.20, greenMat, 0, bodyY + 0.03, frontZ);
+addRoundedCap(width * 0.36, bodyH * 0.48, 0.17, greenMat, 0, bodyY + 0.02, rearZ);
+
+// Rounded fenders/wheel arches sit over, not far from, the wheels.
+for (const side of [-1, 1]) {
+  for (const z of [frontZ * 0.78, rearZ * 0.92]) {
+    const fender = new THREE.Mesh(new THREE.CylinderGeometry(wheelR * 1.15, wheelR * 1.15, 0.12, 18, 1, true), greenMat);
+    fender.rotation.z = Math.PI / 2;
+    fender.scale.set(1.0, 0.55, 1.0);
+    fender.position.set(side * width * 0.39, wheelY + wheelR * 0.75, z);
+    car.add(fender);
+  }
+}
+
+// Cabin: thin black pillars, transparent panes, and separate black roof cap.
+const roofY = 0.20;
+const roofZ = -0.03;
+addBox(width * 0.66, 0.045, length * 0.46, blackMat, 0, roofY, roofZ);
+addRoundedCap(width * 0.34, 0.035, length * 0.22, blackMat, 0, roofY + 0.025, roofZ);
+for (const side of [-1, 1]) {
+  const x = side * width * 0.31;
+  for (const z of [0.14, -0.23]) addBox(0.028, 0.34, 0.028, blackMat, x, 0.035, z);
+  addBox(0.012, 0.16, 0.22, glassMat, side * width * 0.325, 0.055, -0.04);
+  addBox(0.032, 0.018, 0.018, blackMat, side * width * 0.43, 0.04, 0.18);
+  addBox(0.012, 0.010, 0.055, blackMat, side * width * 0.405, -0.045, 0.02);
+}
+addBox(width * 0.58, 0.17, 0.014, glassMat, 0, 0.055, 0.19);
+addBox(width * 0.50, 0.13, 0.014, glassMat, 0, 0.055, -0.26);
+
+// Dark visible seats inside the open cabin.
+for (const sx of [-0.12, 0.12]) {
+  addBox(0.11, 0.11, 0.10, blackMat, sx, -0.015, -0.08);
+  addBox(0.11, 0.17, 0.035, blackMat, sx, 0.05, -0.14);
+}
+
+// Front face: grille, paired round headlights, bumper. Object faces +Z.
+addBox(width * 0.26, 0.060, 0.014, blackMat, 0, -0.055, length * 0.42);
+for (let i = 0; i < 4; i++) addBox(width * 0.22, 0.004, 0.018, greenMat, 0, -0.080 + i * 0.015, length * 0.43);
+for (const sx of [-0.15, 0.15]) {
+  const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.033, 0.012, 18), lightMat);
+  lamp.rotation.x = Math.PI / 2;
+  lamp.position.set(sx, -0.035, length * 0.435);
+  car.add(lamp);
+}
+addBox(width * 0.72, 0.025, 0.030, blackMat, 0, -0.145, length * 0.45);
+addBox(width * 0.68, 0.025, 0.028, blackMat, 0, -0.145, -length * 0.43);
+for (const sx of [-0.22, 0.22]) addBox(0.032, 0.035, 0.010, tailMat, sx, -0.045, -length * 0.43);
+
+// Four grounded side wheels: tire torus and hub disc face outward along X.
+for (const [wx, wz] of [[-0.25, frontZ * 0.78], [0.25, frontZ * 0.78], [-0.25, rearZ * 0.92], [0.25, rearZ * 0.92]]) {
+  const tire = new THREE.Mesh(new THREE.TorusGeometry(wheelR * 0.72, wheelR * 0.28, 10, 24), rubberMat);
+  tire.rotation.y = Math.PI / 2;
+  tire.position.set(wx, wheelY, wz);
+  car.add(tire);
+
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(wheelR * 0.38, wheelR * 0.38, 0.018, 16), blackMat);
+  hub.rotation.z = Math.PI / 2;
+  hub.position.set(wx, wheelY, wz);
+  car.add(hub);
+}
+
+for (const side of [-1, 1]) {
+  addTube(
+    new THREE.Vector3(side * width * 0.39, -0.145, -0.22),
+    new THREE.Vector3(side * width * 0.39, -0.145, 0.22),
+    0.010,
+    blackMat
+  );
+}
+```
+
+Key idioms:
+- Compact cars are tall cabins on short rounded bodies. Do not stretch them
+  into a long SUV or flatten them into a cart.
+- Use separate green body, black canopy/pillars, glass, rubber, lamps, and
+  interior seat materials. The black roof is a cap supported by posts.
+- A toy-like rounded silhouette can be approximated by boxes plus flattened
+  SphereGeometry caps and cylindrical fenders.
+- Side windows may be transparent panes or open cutouts, but the pillars,
+  seats, windshield, and roof must make the cabin readable.
+- Wheel arches/fenders are body-colored and close to the wheels; wheels are
+  low, small, and tucked under the body, not floating outside the shell.
 
 ### Example 4 — Ceramic floral decals on a curved vase surface
 
@@ -626,6 +1226,8 @@ These examples cover the most-failed patterns:
   iteration, and correct wheel/tube geometry orientation.
 - Seating furniture with distinct cushion modules, rolled arms, tufting,
   piping, slats, frames, and separate material regions.
+- Specialized compact-car and tub-chair failure patterns without repeating
+  those playbooks in every repair prompt.
 - Surface-attached ceramic decals that do not float away from the body.
 - Picking the right material class for the surface type.
 - Mandatory normalization at end.

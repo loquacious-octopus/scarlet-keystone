@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
 
 from modules.js_checker.settings import JSCheckerConfig
@@ -23,25 +23,42 @@ class APIConfig(BaseModel):
 
 
 class PipelineConfig(BaseModel):
-    batch_time_budget: int = 7000
+    batch_time_budget: float = 1800.0
     prompt_timeout: float = 120.0
     use_planner: bool = True
+    use_critic_edit: bool = False
 
 
 class VllmServeConfig(BaseModel):
-    """ 
+    """
     Options for launching `vllm serve` via run.sh (local endpoints only).
     """
 
     model: str = ""
     port: int | None = None
-    gpu_ids: str = "0"
-    tensor_parallel_size: int = 1
+    gpu_ids: str = "auto"
+    tensor_parallel_size: int = 0
     gpu_memory_utilization: float = 0.90
     max_model_len: int = 8192
     max_num_seqs: int = 4
     api_key: str = "local"
-    rope_patch: bool = False
+
+
+class ProviderRoutingConfig(BaseModel):
+    """OpenRouter `provider` routing block — mirrors the upstream API.
+
+    Forward-compat: `extra="allow"` lets newer OpenRouter fields (e.g.
+    `max_price`, `preferred_max_latency`) pass through without bumping
+    this model.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    order: list[str] | None = None
+    only: list[str] | None = None
+    ignore: list[str] | None = None
+    allow_fallbacks: bool | None = True
+    sort: str | None = None
 
 
 class LLMClientConfig(BaseModel):
@@ -78,6 +95,7 @@ class ActorConfig(BaseModel):
     ensemble_size: int = 1
     ensemble_temperature: float = 0.3
     multimodal: bool = False
+    providers: ProviderRoutingConfig | None = None
 
 class ActorsConfig(BaseModel):
     planner: ActorConfig = ActorConfig(
@@ -88,8 +106,6 @@ class ActorsConfig(BaseModel):
         workers=2, queue_size=8,
         client="openrouter", model="qwen/qwen-2.5-72b-instruct",
         max_tokens=8192,
-        ensemble_size=4,
-        ensemble_temperature=0.3,
     )
     patcher: ActorConfig = ActorConfig(workers=2, queue_size=8)
     critic: ActorConfig = ActorConfig(
@@ -97,7 +113,7 @@ class ActorsConfig(BaseModel):
         client="openrouter", model="qwen/qwen2.5-vl-72b-instruct",
     )
     judge: ActorConfig = ActorConfig(
-        workers=3, queue_size=8,
+        workers=4, queue_size=8,
         client="openrouter", model="qwen/qwen2.5-vl-72b-instruct",
         max_tokens=1024,
     )
@@ -105,7 +121,7 @@ class ActorsConfig(BaseModel):
     renderer: ActorConfig = ActorConfig(workers=1, queue_size=4)
 
 
-_LLM_ACTORS_BASE: tuple[str, ...] = ("coder", "critic", "judge")
+_LLM_ACTORS_BASE: tuple[str, ...] = ("coder", "critic")
 _LLM_ACTORS_WITH_PLANNER: tuple[str, ...] = ("planner",) + _LLM_ACTORS_BASE
 
 
@@ -137,11 +153,25 @@ class SettingsConf(BaseSettings):
     api: APIConfig = APIConfig()
     pipeline: PipelineConfig = PipelineConfig()
     benchmark: bool = True
+    warmup: bool = True
     llm_clients: dict[str, LLMClientConfig] = Field(default_factory=_default_llm_clients)
     actors: ActorsConfig = ActorsConfig()
     event_bus: EventBusConfig = EventBusConfig()
     js_checker: JSCheckerConfig = JSCheckerConfig()
     renderer: RendererConfig = RendererConfig()
+
+    @model_validator(mode="after")
+    def _validate_pure_image_requires_multimodal(self) -> "SettingsConf":
+        """When the planner is disabled the coder must consume the reference
+        image directly, so multimodal=true is required on a vision-capable model."""
+        if not self.pipeline.use_planner and not self.actors.coder.multimodal:
+            raise ValueError(
+                "pipeline.use_planner=false requires actors.coder.multimodal=true "
+                "(coder must consume the reference image directly when there is no "
+                "planner). Set actors.coder.multimodal=true and choose a "
+                "vision-capable model."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_actor_clients(self) -> "SettingsConf":
@@ -150,15 +180,8 @@ class SettingsConf(BaseSettings):
             _LLM_ACTORS_WITH_PLANNER if self.pipeline.use_planner
             else _LLM_ACTORS_BASE
         )
-        if self.actors.coder.ensemble_size <= 1 and "judge" in actor_names:
-            actor_names.remove("judge")
-        if not self.pipeline.use_planner and not self.actors.coder.multimodal:
-            raise ValueError(
-                "pipeline.use_planner=false requires actors.coder.multimodal=true "
-                "(coder must consume the reference image directly when there is no "
-                "planner). Set actors.coder.multimodal=true and choose a "
-                "vision-capable model (e.g. qwen/qwen2.5-vl-72b-instruct)."
-            )
+        if self.actors.coder.ensemble_size > 1 or self.pipeline.use_critic_edit:
+            actor_names.append("judge")
         for name in actor_names:
             actor: ActorConfig = getattr(self.actors, name)
             if actor.client is None:

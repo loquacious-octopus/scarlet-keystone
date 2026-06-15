@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 
 import httpx
@@ -10,8 +11,9 @@ from config.settings import LLMClientConfig, SettingsConf
 from logger_config import logger
 from modules.js_checker.module import JSCheckerModule
 from modules.renderer.module import RendererModule
-from pipeline.pipeline_factory import Pipeline, build_pipeline
-from pipeline.state import MinerState, MinerStatus
+from pipeline.factory import build_pipeline
+from pipeline.orchestrator import Pipeline
+from pipeline.state import MinerState
 from pipeline.task import PipelineTask
 
 _PLACEHOLDER_KEYS = {"", "placeholder", "your-key-here", "sk-or-...", "changeme"}
@@ -70,18 +72,18 @@ class GenerationPipeline:
             self._clients[name] = AsyncOpenAI(
                 base_url=cfg.base_url,
                 api_key=api_key,
-                timeout=httpx.Timeout(300.0, connect=10.0),
+                timeout=httpx.Timeout(900.0, connect=10.0),
+                max_retries=0,
             )
             logger.info(
                 f"llm client ready | name={name} base_url={cfg.base_url} "
                 f"local={_is_local_endpoint(cfg.base_url)}"
             )
-
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
+        self._http_client = httpx.AsyncClient(timeout=30.0, limits=limits)
 
         await self.js_checker.startup()
         await self.renderer.startup()
-
         self._pipeline = build_pipeline(
             settings=self.settings,
             clients=self._clients,
@@ -92,10 +94,22 @@ class GenerationPipeline:
         await self._pipeline.start()
         actors = self.settings.actors
         eb = self.settings.event_bus
+        use_planner = self.settings.pipeline.use_planner
         logger.info(f"[Pipeline initialized — waiting for models]")
-        logger.info(f"Planner: {actors.planner.client} | Model: {actors.planner.model}")
-        logger.info(f"Coder: {actors.coder.client} | Model: {actors.coder.model}")
+        if use_planner:
+            logger.info(f"Planner: {actors.planner.client} | Model: {actors.planner.model}")
+        else:
+            logger.info("Planner: DISABLED (pipeline.use_planner=false — pure-image coder)")
+        logger.info(
+            f"Coder: {actors.coder.client} | Model: {actors.coder.model} | "
+            f"multimodal={actors.coder.multimodal} | ensemble_size={actors.coder.ensemble_size} | "
+            f"ensemble_temperature={actors.coder.ensemble_temperature}"
+        )
         logger.info(f"Critic: {actors.critic.client} | Model: {actors.critic.model}")
+        if actors.coder.ensemble_size > 1:
+            logger.info(f"Judge: {actors.judge.client} | Model: {actors.judge.model}")
+        else:
+            logger.info("Judge: DISABLED (ensemble_size=1)")
         logger.info(f"Iter cap: {eb.max_iter} | Deadline: {eb.task_deadline_s:.0f}s | Threshold: {eb.score_threshold:.2f}")
 
     async def shutdown(self) -> None:
@@ -112,26 +126,86 @@ class GenerationPipeline:
             except Exception as exc:
                 logger.warning(f"[Pipeline shutdown] Client {name} close failed: {exc}")
 
-    # Batch
+    def _cleanup_batch_memory(self, context: str) -> None:
+        if self._pipeline is None:
+            return
+        sessions = self._pipeline.session_store.clear()
+        statuses = len(self._pipeline.task_status)
+        self._pipeline.task_status.clear()
+        collected = gc.collect()
+        logger.info(
+            f"[{context} cleanup] sessions={sessions} "
+            f"task_status={statuses} gc_collected={collected}"
+        )
+
+    def clear_runtime_sessions(self, context: str) -> int:
+        if self._pipeline is None:
+            return 0
+        sessions = self._pipeline.session_store.clear()
+        statuses = len(self._pipeline.task_status)
+        self._pipeline.task_status.clear()
+        collected = gc.collect()
+        logger.info(
+            f"[{context}] cleared sessions={sessions} "
+            f"task_status={statuses} gc_collected={collected}"
+        )
+        return sessions
 
     async def run_batch(self, tasks: list[PipelineTask]) -> None:
         if self._pipeline is None:
             logger.error("[Batch failed] Run called before startup")
             return
+        if tasks:
+            batch_seed = tasks[0].seed
+            if self._pipeline.planner is not None:
+                self._pipeline.planner.seed = batch_seed
+            self._pipeline.coder.seed = batch_seed
+            self._pipeline.critic.seed = batch_seed
+            if self._pipeline.judge is not None:
+                self._pipeline.judge.seed = batch_seed
+            planner_seed = self._pipeline.planner.seed if self._pipeline.planner is not None else "n/a"
+            judge_seed = self._pipeline.judge.seed if self._pipeline.judge is not None else "n/a"
+            logger.info(
+                f"[Batch seed] Agents updated | seed={batch_seed} "
+                f"(planner={planner_seed}, coder={self._pipeline.coder.seed}, "
+                f"critic={self._pipeline.critic.seed}, judge={judge_seed})"
+            )
+            
+        budget = self.settings.pipeline.batch_time_budget
+
+        async def run_one(task: PipelineTask) -> None:
+            while True:
+                result = await (await self._pipeline.submit(task))
+                if not result.failed or task.attempt ==1:
+                    self.state.record_task(result)
+                    return
+                task = PipelineTask(
+                    stem=task.stem, image_url=task.image_url, seed=task.seed,
+                )
+                task.attempt = result.attempt + 1
+                logger.info(f"[Batch retry] {task.stem} | attempt={task.attempt}")
+
         try:
-            logger.info(f"[Batch starting] {len(tasks)} tasks")
-            futures = [await self._pipeline.submit(t) for t in tasks]
-            for finish in asyncio.as_completed(futures):
-                task = await finish
-                self.state.record_task(task)
-                logger.info(f"[Batch progress] {self.state.progress}/{len(tasks)} tasks completed")
+            logger.info(f"[Batch starting] {len(tasks)} tasks | budget={budget:.0f}s")
+            await asyncio.wait_for(
+                asyncio.gather(*(run_one(t) for t in tasks)),
+                timeout=budget-120,
+            )
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"[Batch deadline] hit {budget:.0f}s")
+            for task in tasks:
+                recorded = self.state.tasks.get(task.stem)
+                if recorded is None or recorded.failed or not recorded.js_code:
+                    task.failed = True
+                    task.failure_reason = f"batch budget exceeded ({budget:.0f}s)"
+                    task.failure_stage = "batch_deadline"
+                    self.state.record_task(task)
+            
         except asyncio.CancelledError:
-            logger.info("[Batch cancelled]")
             raise
-        except Exception as exc:
-            logger.exception(f"[Batch failed] {exc}")
         finally:
-            self.state.status = MinerStatus.COMPLETE
+            self._cleanup_batch_memory("Batch")
             logger.info(
                 f"[Batch done] {len(self.state.results)} ok, "
                 f"{len(self.state.failed)} failed"
@@ -151,3 +225,5 @@ class GenerationPipeline:
             raise
         except Exception as exc:
             logger.exception(f"[Warmup failed] {exc}")
+        finally:
+            self._cleanup_batch_memory("Warmup")

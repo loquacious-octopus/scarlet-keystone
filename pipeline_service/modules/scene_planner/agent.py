@@ -4,13 +4,14 @@ import base64
 import time
 from typing import Any
 
+from config.settings import ProviderRoutingConfig
 from llm.session import SessionAgent
 from llm.session_store import SessionStore
 from logger_config import logger
+from modules.base_agent import BaseAgent
 from modules.scene_planner.prompts import PLANNER_OSD_PROMPT
 from modules.scene_planner.schema import OSD
-
-_ACTOR = "planner"
+from config.settings import ActorConfig
 
 
 _PLANNER_SYSTEM_PROMPT = (
@@ -33,33 +34,23 @@ _PLANNER_SYSTEM_PROMPT = (
 )
 
 
-class ScenePlannerAgent:
+class ScenePlannerAgent(BaseAgent):
     """Per-task Scene Planner."""
 
-    actor = _ACTOR
+    actor = "planner"
 
     def __init__(
         self,
+        clients: AsyncOpenAI,
+        settings: ActorConfig,
         *,
-            client: Any,
-        model: str,
         session_store: SessionStore,
-        temperature: float = 0.0,
-        seed: int | None = 42,
-        max_tokens: int = 4096,
         max_tool_iters: int = 4,
-        reasoning_effort: str | None = None,
-        backend: str = "openrouter",
     ) -> None:
-        self.client = client
-        self.model = model
+        super().__init__(clients, settings)
         self.session_store = session_store
-        self.temperature = temperature
-        self.seed = seed
-        self.max_tokens = max_tokens
         self.max_tool_iters = max_tool_iters
-        self.reasoning_effort = reasoning_effort
-        self.backend = backend
+        self.reasoning_effort = settings.reasoning_effort
 
     def _build_session(self, task_id: str, actor: str) -> SessionAgent:
         return SessionAgent(
@@ -67,15 +58,21 @@ class ScenePlannerAgent:
             actor=actor,
             system_prompt=_PLANNER_SYSTEM_PROMPT,
             model=self.model,
+            max_tokens=self.max_tokens,
             tools=None,
             response_model=OSD,
             client=self.client,
             temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            min_p=self.min_p,
+            presence_penalty=self.presence_penalty,
+            repetition_penalty=self.repetition_penalty,
             seed=self.seed,
-            max_tokens=self.max_tokens,
             max_tool_iters=self.max_tool_iters,
             reasoning_effort=self.reasoning_effort,
             backend=self.backend,
+            providers=self.providers,
         )
 
     async def plan(
@@ -100,8 +97,8 @@ class ScenePlannerAgent:
             url_str = image_url  # type: ignore[assignment]
 
         content = [
-            {"type": "image_url", "image_url": {"url": url_str}},
             {"type": "text", "text": PLANNER_OSD_PROMPT},
+            {"type": "image_url", "image_url": {"url": url_str}},
         ]
         img_kb = (len(image_bytes) / 1024.0) if image_bytes else 0.0
         logger.info(

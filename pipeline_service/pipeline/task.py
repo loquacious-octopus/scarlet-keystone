@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from modules.critic.schema import CriticReport
+from typing import Any
 
 
 @dataclass
 class Candidate:
-    """One multi-gen attempt. Populated only when coder.ensemble_size > 1."""
+    """One multigen candidate produced by the coder in iteration 0."""
 
     k: int
     seed: int
@@ -19,11 +16,11 @@ class Candidate:
     js_errors: list[str] = field(default_factory=list)
     rendered_png: bytes | None = None
     render_errors: list[str] = field(default_factory=list)
-    critic_report: "CriticReport | None" = None
     elapsed_s: float = 0.0
-    drop_reason: str | None = None  # "coder" | "checker" | "renderer" | "critic" | None
+    drop_reason: str | None = None
 
 
+#TODO zmiana na pydantic
 @dataclass
 class PipelineTask:
     """Single envelope threaded through every pipeline stage."""
@@ -53,9 +50,11 @@ class PipelineTask:
     js_total_ms: float | None = None
 
     # Renderer (mutated by RendererModule.process)
+    multigen_pngs: list[bytes] = field(default_factory=list)  # rendered PNGs for each coder in the multigen ensemble
     rendered_png: bytes | None = None              # 2x2 grid
     render_ms: float | None = None
     render_errors: list[str] = field(default_factory=list)
+    refinement_rendered_pngs: list[bytes] = field(default_factory=list)  # 2x2 grids from each refinement iteration
 
     # Refinement state (orchestrator)
     iteration: int = 0
@@ -64,6 +63,10 @@ class PipelineTask:
     best_iter: int = -1
     best_js_code: str | None = None
     best_rendered_png: bytes | None = None
+
+    # Multigen (orchestrator) — populated only when coder.ensemble_size > 1
+    candidates: list[Candidate] = field(default_factory=list)
+    winner_k: int | None = None
 
     # Lifecycle (orchestrator-private — not part of the public artifact)
     started_at: float = 0.0
@@ -80,8 +83,4 @@ class PipelineTask:
 
     # Monitoring
     oom_retries: int = 0
-
-    # Multi-gen state (populated only when coder.ensemble_size > 1)
-    candidates: list[Candidate] = field(default_factory=list)
-    winner_k: int | None = None
 

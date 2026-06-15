@@ -1,6 +1,54 @@
 from __future__ import annotations
 
 
+THREEJS_OUTPUT_SPEC_REFERENCE = """\
+Three.js output specification (condensed, authoritative):
+
+## Required module shape
+- Return ONLY JavaScript source code.
+- The module must export exactly one default function:
+  `export default function generate(THREE) { ... }`
+- The function must be synchronous.
+- No imports, no require, no external dependencies.
+- `THREE` is only available as the function parameter, never at top level.
+
+## Scene requirements
+- Return a Group, Mesh, LineSegments, or Points.
+- Build geometry algorithmically; do not embed large literal arrays or binary blobs.
+- Asset must fit within [-0.5, 0.5] on every axis.
+- Y-up. The object should face +Z.
+- Always normalize with a fit-to-unit-cube helper before returning.
+
+## Main limits
+- Max 250k vertices
+- Max 200 draw calls
+- Max depth 32
+- Max 50k instanced objects total
+- Max 1 MB DataTexture data
+- Max file size 1 MB
+- Max literal budget 50 KB
+- Max execution time 5 seconds
+
+## Allowed object/material pairings
+- Mesh / InstancedMesh -> MeshStandardMaterial, MeshPhysicalMaterial, MeshBasicMaterial
+- Line / LineSegments -> LineBasicMaterial or LineDashedMaterial
+- Points -> PointsMaterial
+
+## Important prohibitions
+- No randomness: no Math.random, Date, performance, crypto
+- No DOM / browser globals: no window, document, navigator
+- No dynamic code: no eval, Function, import(), require()
+- No loaders, no ShaderMaterial, no RawShaderMaterial
+- No top-level THREE usage
+
+## Practical guidance
+- Prefer simple reusable geometry/material blocks over many unique meshes.
+- Prefer primitive composition, lathe, tube, extrude, and instancing.
+- Use helper functions if useful, but pass THREE into them when needed.
+- If unsure, favor a simpler valid procedural approximation over an invalid fancy one.
+"""
+
+
 THREEJS_PRIMITIVE_REFERENCE = """\
 Three.js primitive reference (authoritative for SIR). Y is up; the compiler
 auto-scales the whole scene into [-0.5, 0.5]^3, so emit correct proportions

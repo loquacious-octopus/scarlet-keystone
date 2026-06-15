@@ -13,7 +13,7 @@ export const LIMITS = {
   drawCalls: 200,
   depth: 32,
   instances: 50_000,
-  textureBytes: 4 * 1024 * 1024,
+  textureBytes: 4 * 1_048_576,
 };
 
 const ALLOWED_ROOT_TYPES = new Set([
@@ -47,6 +47,7 @@ const MAP_PROPS = [
   'clearcoatRoughnessMap',
   'iridescenceMap',
   'iridescenceThicknessMap',
+  'anisotropyMap',
 ];
 
 export function postValidate(root) {
@@ -109,7 +110,7 @@ export function postValidate(root) {
       cycleDetected = true;
       return;
     }
-    if (depth > LIMITS.depth + 1) {
+    if (depth > LIMITS.depth) {
       depthExceeded = true;
       return;
     }

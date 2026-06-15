@@ -115,6 +115,7 @@ async def status(replacements_remaining: int = 0):
     return state.to_status_response()
 
 
+
 @app.post("/generate", response_model=GenerateAccepted)
 async def generate(request: GenerateRequest):
     async with _generate_lock:
@@ -130,7 +131,7 @@ async def generate(request: GenerateRequest):
 
         if state.status not in {MinerStatus.READY, MinerStatus.COMPLETE}:
             return _conflict(state, "Cannot accept batch")
-        
+
         gen_task = app.state.generation_task
         if gen_task and not gen_task.done():
             gen_task.cancel()
@@ -144,7 +145,7 @@ async def generate(request: GenerateRequest):
             for p in request.prompts
         ]
         state.reset_for_batch([p.stem for p in request.prompts], request.seed)
-        
+
         async def _run_batch_safe():
             try:
                 await pipeline.run_batch(tasks)
@@ -177,6 +178,7 @@ async def results():
     return StreamingResponse(zip_buffer, media_type="application/zip")
 
 
+
 def _completed_task_view(t: PipelineTask) -> dict:
     osd_preview = (t.osd[:80] + "…") if t.osd and len(t.osd) > 80 else t.osd
     return {
@@ -199,6 +201,12 @@ def _completed_task_view(t: PipelineTask) -> dict:
             "draw_calls": (t.js_metrics or {}).get("drawCalls"),
             "max_depth": (t.js_metrics or {}).get("maxDepth"),
         } if t.js_metrics else None,
+        "refinement": {
+            "iteration": t.iteration,
+            "best_iter": t.best_iter,
+            "best_score": t.best_score,
+            "score_history": t.score_history,
+        },
     }
 
 
@@ -262,6 +270,18 @@ async def debug_task(stem: str):
         "rendered_png_b64": (
             base64.b64encode(task.rendered_png).decode() if task.rendered_png else None
         ),
+        "multigen_pngs_b64": [
+            base64.b64encode(png).decode() for png in (task.multigen_pngs or [])
+        ] if task.multigen_pngs else None,
+        "refinement_rendered_pngs_b64": [
+            base64.b64encode(png).decode() for png in (task.refinement_rendered_pngs or [])
+        ] if task.refinement_rendered_pngs else None,
+        "refinement": {
+            "iteration": task.iteration,
+            "best_iter": task.best_iter,
+            "best_score": task.best_score,
+            "score_history": task.score_history,
+        },
         "meta": task.meta,
     }
 

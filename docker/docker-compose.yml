@@ -16,7 +16,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_HOME=/root/.cache/huggingface
-      - OPENROUTER_API_KEY="placeholder"
+      - OPENROUTER_API_KEY=placeholder
 
 volumes:
   huggingface-cache:

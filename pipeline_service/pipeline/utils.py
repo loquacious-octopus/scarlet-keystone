@@ -9,6 +9,8 @@ import time
 import requests
 from loguru import logger
 
+from modules.metrics.gpu import resolve_vllm_gpu_config
+
 MAX_OOM_RETRIES = 3
 
 
@@ -27,19 +29,23 @@ def _kill_vllm_by_port(port: int) -> None:
 def _start_vllm(port: int, model: str, api_key: str, max_model_len: int,
                 tensor_parallel_size: int, gpu_memory_utilization: float,
                 max_num_seqs: int, gpu_ids: str) -> None:
+    resolved_ids, resolved_tp = resolve_vllm_gpu_config(gpu_ids, tensor_parallel_size)
     cmd = [
         "/opt/vllm-env/bin/vllm", "serve", model,
         "--port", str(port),
         "--api-key", api_key,
         "--max-model-len", str(max_model_len),
-        "--tensor-parallel-size", str(tensor_parallel_size),
+        "--tensor-parallel-size", str(resolved_tp),
         "--gpu-memory-utilization", str(gpu_memory_utilization),
         "--max_num_seqs", str(max_num_seqs),
     ]
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = gpu_ids
+    env["CUDA_VISIBLE_DEVICES"] = resolved_ids
     subprocess.Popen(cmd, env=env)
-    logger.info(f"[OOM] vllm started on port {port} model={model}")
+    logger.info(
+        f"[OOM] vllm started on port {port} model={model} "
+        f"GPUs={resolved_ids} TP={resolved_tp}"
+    )
 
 
 def _wait_for_vllm(port: int, timeout: int = 600) -> bool:
@@ -61,6 +67,8 @@ def restart_vllm(cfg, on_failed_callback) -> None:
     Kill vllm on cfg.vllm_port, restart it, wait for health.
     Calls on_failed_callback() if all retries exhausted.
     Intended to run in a thread (run_in_executor) — blocking.
+
+    # TODO: Add logic to restart vllm if it is not responding
     """
     gc.collect()
 

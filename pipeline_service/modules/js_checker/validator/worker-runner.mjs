@@ -1,198 +1,244 @@
 /**
  * Worker-thread runner for miner code.
  *
- * This file is loaded inside a Node.js worker thread spawned by execute.js.
- * Everything from module load through post-validation happens here, so the
- * main thread only sees a JSON summary of the run. Advantages:
+ * Loaded inside a Node.js worker_thread by execute.js. Compiles miner source
+ * via `new Function(body)` (no ESM loader, no module cache), installs runtime
+ * traps in a single phase, runs `generate(THREE)`, and post-validates the
+ * result.
  *
- *   1. `worker.terminate()` from the main thread preempts synchronous loops,
- *      giving us real timeout enforcement instead of post-hoc checks.
- *   2. Module evaluation time counts against the budget — the main thread
- *      starts its clock *before* instantiating the worker, so any work done
- *      at module top level shows up in the total.
- *   3. `resourceLimits.maxOldGenerationSizeMb` on the Worker constructor
- *      gives us an actual heap cap. Exceeding it terminates the worker with
- *      an ERR_WORKER_OUT_OF_MEMORY error that the main thread catches and
- *      reports as HEAP_EXCEEDED.
- *
- * The worker receives the miner source as `workerData.source`, writes it to
- * a temp file (required for Node ESM dynamic import), imports it, calls the
- * default export, and runs post-validation. A single `parentPort.postMessage`
- * reports the outcome. If the worker is terminated or crashes, the main
- * thread synthesizes the appropriate failure from the exit event.
+ * Source arrives here ALREADY TRANSFORMED — `export default <decl>` replaced
+ * with `return <decl>` by validator/index.js using exact AST byte offsets.
+ * This lets us drop ESM entirely: no temp file, no `import()`, no module
+ * cache growth. Because there is no ESM loader involvement, ALL runtime traps
+ * (including Function and eval) are installed before any miner code runs.
  */
 
 import { parentPort, workerData } from 'node:worker_threads';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import * as THREE from 'three';
 import { postValidate } from './postValidation.js';
-import { createSafeThree } from './safeThree.js';
 
-// Built once at module load, reused across the worker's single run.
-// The Proxy is stateless — its backing object only holds references to
-// allowlisted THREE members, with no per-request state — so one-shot
-// construction at import time keeps the hot path free of proxy setup cost
-// and avoids allocating transient proxies on every invocation.
-const SAFE_THREE = createSafeThree(THREE);
+const SafeFunction = Function;
+// Capture Date.now BEFORE any traps are installed so worker-internal timing
+// measurements keep working after `Date` is trapped in globalThis.
+const NowMs = Date.now.bind(Date);
 
-async function run() {
+const TRAPPED_GLOBALS = [
+  'setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask',
+  'fetch', 'XMLHttpRequest', 'WebSocket',
+  'crypto',
+  'Date', 'performance',
+  'eval', 'Function',
+  'process', 'global',
+  'WeakRef', 'FinalizationRegistry',
+  'SharedArrayBuffer', 'Atomics',
+];
+
+const CODEGEN_PROTOTYPES = [
+  SafeFunction.prototype,
+  Object.getPrototypeOf(function*(){}),
+  Object.getPrototypeOf(async function(){}),
+  Object.getPrototypeOf(async function*(){}),
+];
+
+function trapViolation(name) {
+  throw new Error(`Runtime violation: ${name} is forbidden`);
+}
+
+function send(msg) {
+  parentPort.postMessage(msg);
+}
+
+function run() {
   const { source } = workerData;
 
-  // Write source to a tmp file so Node's ESM loader will resolve it.
-  // If the worker is terminated before cleanup runs, the OS will reap /tmp.
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), '404-validate-worker-'));
-  const tmpFile = path.join(tmpDir, 'generate.mjs');
-  fs.writeFileSync(tmpFile, source, 'utf8');
+  const origRandom = Math.random;
+  const savedGlobals = new Map();
+  const savedCtors = [];
 
-  const moduleStart = Date.now();
-  let module;
+  let moduleLoadMs = 0;
+  let executionMs = 0;
+  const moduleStart = NowMs();
+
   try {
-    // Cache-bust so repeated validations of the same source re-evaluate.
-    const url = pathToFileURL(tmpFile).href + '?t=' + Date.now();
-    module = await import(url);
-  } catch (err) {
-    parentPort.postMessage({
-      failures: [
-        {
+    // Deterministic Math.random — same seed/stream as upstream validator.
+    let seed = 0x12345678;
+    Math.random = () => {
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+
+    for (const name of TRAPPED_GLOBALS) {
+      if (!(name in globalThis)) continue;
+      savedGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+      try {
+        Object.defineProperty(globalThis, name, {
+          get() { trapViolation(name); },
+          configurable: true,
+        });
+      } catch {
+        try { globalThis[name] = undefined; } catch {}
+      }
+    }
+
+    for (const proto of CODEGEN_PROTOTYPES) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'constructor');
+      savedCtors.push({ proto, desc });
+      Object.defineProperty(proto, 'constructor', {
+        get() { trapViolation('Function constructor'); },
+        configurable: true,
+      });
+    }
+
+    const body = `'use strict';\n${source}`;
+    let factory;
+    try {
+      factory = new SafeFunction(body);
+    } catch (err) {
+      moduleLoadMs = NowMs() - moduleStart;
+      send({
+        failures: [{
           stage: 'module_load',
           rule: 'EXECUTION_THREW',
-          detail: err && err.message ? err.message : String(err),
-        },
-      ],
-      metrics: null,
-      moduleLoadMs: Date.now() - moduleStart,
-      executionMs: 0,
-    });
-    cleanup(tmpDir);
-    return;
-  }
-  const moduleLoadMs = Date.now() - moduleStart;
+          detail: `compilation failed: ${err && err.message ? err.message : String(err)}`,
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs: 0,
+      });
+      return;
+    }
+    moduleLoadMs = NowMs() - moduleStart;
 
-  const generate = module.default;
-  if (typeof generate !== 'function') {
-    parentPort.postMessage({
-      failures: [
-        {
+    const execStart = NowMs();
+    let generate;
+    try {
+      generate = factory();
+    } catch (err) {
+      executionMs = NowMs() - execStart;
+      const rule = err && err.message && err.message.includes('Runtime violation')
+        ? 'RUNTIME_VIOLATION'
+        : 'EXECUTION_THREW';
+      send({
+        failures: [{
+          stage: 'module_load',
+          rule,
+          detail: err && err.message ? err.message : String(err),
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs,
+      });
+      return;
+    }
+
+    if (typeof generate !== 'function') {
+      executionMs = NowMs() - execStart;
+      send({
+        failures: [{
           stage: 'module_load',
           rule: 'INVALID_RETURN_TYPE',
-          detail: 'default export is not a function',
-        },
-      ],
-      metrics: null,
-      moduleLoadMs,
-      executionMs: 0,
-    });
-    cleanup(tmpDir);
-    return;
-  }
+          detail: `default export is not a function (got ${typeof generate})`,
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs,
+      });
+      return;
+    }
 
-  // Call generate() synchronously and capture the raw return value BEFORE any
-  // await. If we awaited here, a Promise return value would be unwrapped and
-  // the thenable check below would never fire.
-  const execStart = Date.now();
-  let rawResult;
-  try {
-    // Runtime capability boundary. Even if miner code subverts the static
-    // analyzer via some JS syntax we haven't anticipated, every `X.ShaderMaterial`
-    // access flows through the Proxy's get trap and is enforced there.
-    rawResult = generate(SAFE_THREE);
-  } catch (err) {
-    parentPort.postMessage({
-      failures: [
-        {
+    // Call generate() synchronously and capture the raw return value BEFORE
+    // any await. If we awaited here, a Promise return value would be unwrapped
+    // and the thenable check below would never fire.
+    let rawResult;
+    try {
+      rawResult = generate(THREE);
+    } catch (err) {
+      executionMs = NowMs() - execStart;
+      const rule = err && err.message && err.message.includes('Runtime violation')
+        ? 'RUNTIME_VIOLATION'
+        : 'EXECUTION_THREW';
+      send({
+        failures: [{
           stage: 'execution',
-          rule: 'EXECUTION_THREW',
+          rule,
           detail: err && err.message ? err.message : String(err),
-        },
-      ],
-      metrics: null,
-      moduleLoadMs,
-      executionMs: Date.now() - execStart,
-    });
-    cleanup(tmpDir);
-    return;
-  }
-  const executionMs = Date.now() - execStart;
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs,
+      });
+      return;
+    }
+    executionMs = NowMs() - execStart;
 
-  // Reject any thenable — real Promise, duck-typed, or chained.
-  if (
-    rawResult !== null &&
-    (typeof rawResult === 'object' || typeof rawResult === 'function') &&
-    typeof rawResult.then === 'function'
-  ) {
-    parentPort.postMessage({
-      failures: [
-        {
+    // Reject any thenable — real Promise, duck-typed, or chained.
+    if (
+      rawResult !== null &&
+      (typeof rawResult === 'object' || typeof rawResult === 'function') &&
+      typeof rawResult.then === 'function'
+    ) {
+      send({
+        failures: [{
           stage: 'execution',
           rule: 'ASYNC_NOT_ALLOWED',
           detail: 'generate() returned a Promise or thenable',
-        },
-      ],
-      metrics: null,
-      moduleLoadMs,
-      executionMs,
-    });
-    cleanup(tmpDir);
-    return;
-  }
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs,
+      });
+      return;
+    }
 
-  // Post-validation runs inside the worker too, so the main thread never
-  // handles miner-constructed Three.js objects directly. This mirrors the
-  // production split where miner code lives entirely inside the sandbox.
-  let postResult;
-  try {
-    postResult = postValidate(rawResult);
-  } catch (err) {
-    parentPort.postMessage({
-      failures: [
-        {
+    let postResult;
+    try {
+      postResult = postValidate(rawResult);
+    } catch (err) {
+      send({
+        failures: [{
           stage: 'post_validation',
           rule: 'EXECUTION_THREW',
           detail: err && err.message ? err.message : String(err),
-        },
-      ],
-      metrics: null,
+        }],
+        metrics: null,
+        moduleLoadMs,
+        executionMs,
+      });
+      return;
+    }
+
+    send({
+      failures: postResult.failures,
+      metrics: postResult.metrics,
       moduleLoadMs,
       executionMs,
     });
-    cleanup(tmpDir);
-    return;
-  }
-
-  parentPort.postMessage({
-    failures: postResult.failures,
-    metrics: postResult.metrics,
-    moduleLoadMs,
-    executionMs,
-  });
-
-  cleanup(tmpDir);
-}
-
-function cleanup(tmpDir) {
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    // Best-effort: if we can't clean up (permissions, weird state), let it go.
+  } finally {
+    Math.random = origRandom;
+    for (const [name, desc] of savedGlobals) {
+      try { Object.defineProperty(globalThis, name, desc); }
+      catch { try { globalThis[name] = desc?.value; } catch {} }
+    }
+    for (const { proto, desc } of savedCtors) {
+      try { Object.defineProperty(proto, 'constructor', desc); }
+      catch {}
+    }
   }
 }
 
-run().catch((err) => {
-  // Any unhandled error in the runner itself gets reported as an execution
-  // failure so the main thread always has something to work with.
-  parentPort.postMessage({
-    failures: [
-      {
-        stage: 'execution',
-        rule: 'EXECUTION_THREW',
-        detail: err && err.stack ? err.stack : String(err),
-      },
-    ],
+try {
+  run();
+} catch (err) {
+  send({
+    failures: [{
+      stage: 'execution',
+      rule: 'EXECUTION_THREW',
+      detail: err && err.stack ? err.stack : String(err),
+    }],
     metrics: null,
     moduleLoadMs: 0,
     executionMs: 0,
   });
-});
+}
